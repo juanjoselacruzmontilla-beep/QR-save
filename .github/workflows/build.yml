@@ -4,6 +4,9 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -22,3 +25,9 @@ jobs:
         with:
           name: QR-save-APK
           path: app/build/outputs/apk/debug/app-debug.apk
+      - name: Publicar APK en Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk QR-save.apk
+          gh release create "v1.0-${{ github.run_number }}" QR-save.apk --title "QR-save APK" --notes "APK de instalación" --repo "${{ github.repository }}"
