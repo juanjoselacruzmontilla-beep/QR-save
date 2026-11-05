@@ -2,6 +2,8 @@ plugins {
     id 'com.android.application'
 }
 
+def ksPass = System.getenv("KEYSTORE_PASSWORD")
+
 android {
     namespace 'com.qrsave.app'
     compileSdk 34
@@ -10,13 +12,26 @@ android {
         applicationId "com.qrsave.app"
         minSdk 24
         targetSdk 34
-        versionCode 1
-        versionName "1.0"
+        versionCode 2
+        versionName "1.1"
+    }
+
+    signingConfigs {
+        if (ksPass) {
+            release {
+                storeFile file("${rootDir}/keystore/qrsave-release.p12")
+                storeType "PKCS12"
+                storePassword ksPass
+                keyAlias "qrsave"
+                keyPassword ksPass
+            }
+        }
     }
 
     buildTypes {
         release {
             minifyEnabled false
+            signingConfig ksPass ? signingConfigs.release : signingConfigs.debug
         }
     }
 

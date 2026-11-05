@@ -12,10 +12,12 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.media.ExifInterface;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
@@ -32,6 +34,7 @@ import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -65,6 +68,9 @@ import java.util.regex.Pattern;
 public class MainActivity extends Activity {
 
     private static final int REQ_IMG = 2001;
+    private static final float DEFAULT_LOGO_FRACTION = 0.24f;
+    private static final int MIN_LOGO_PCT = 12;
+    private static final int MAX_LOGO_PCT = 30;
     private static final int BG = Color.parseColor("#0F172A");
     private static final int ACCENT = Color.parseColor("#F59E0B");
     private static final int CARD = Color.parseColor("#1E293B");
@@ -100,7 +106,10 @@ public class MainActivity extends Activity {
             if (resultCode == RESULT_OK && data != null && data.getData() != null) {
                 bmp = decodeScaled(data.getData(), 600);
             }
-            if (cb != null) cb.onImage(bmp);
+            if (cb != null) {
+                if (bmp != null) cb.onImage(bmp);
+                else showGenerate();
+            }
             return;
         }
         IntentResult r = IntentIntegrator.parseActivityResult(requestCode, resultCode, data);
@@ -205,21 +214,107 @@ public class MainActivity extends Activity {
                 .setTitle("¿Logo o imagen en el centro?")
                 .setItems(new String[]{"Elegir imagen", "Sin imagen"}, (d, which) -> {
                     if (which == 0) {
-                        imageCallback = bmp -> generate(dynamic, text, bmp);
+                        imageCallback = bmp -> showCrop(bmp, (logo, frac) -> generate(dynamic, text, logo, frac));
                         Intent i = new Intent(Intent.ACTION_GET_CONTENT);
                         i.setType("image/*");
                         startActivityForResult(Intent.createChooser(i, "Elegir imagen"), REQ_IMG);
                     } else {
-                        generate(dynamic, text, null);
+                        generate(dynamic, text, null, DEFAULT_LOGO_FRACTION);
                     }
                 })
                 .show();
     }
 
-    private void generate(final boolean dynamic, final String text, final Bitmap logo) {
+    private interface CropResult { void done(Bitmap logo, float qrFraction); }
+
+    /** Pantalla para recortar la imagen y elegir su tamaño dentro del QR, con vista previa. */
+    private void showCrop(final Bitmap src, final CropResult result) {
+        backAction = this::showGenerate;
+        LinearLayout box = screen();
+        box.setPadding(dp(16), dp(24), dp(16), dp(16));
+        box.addView(title("Recortar imagen"));
+        box.addView(space(8));
+
+        final CropView cv = new CropView(this);
+        cv.setBitmap(src);
+        box.addView(cv, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        final ImageView preview = new ImageView(this);
+        preview.setBackgroundColor(Color.WHITE);
+        final float[] qrFrac = { DEFAULT_LOGO_FRACTION };
+
+        final Runnable refresh = () -> {
+            try {
+                preview.setImageBitmap(makeQr("https://qr-save.app/vista-previa", cv.getCropped(), qrFrac[0], null, 360));
+            } catch (Exception ignored) { }
+        };
+        cv.setListener(refresh::run);
+
+        TextView l1 = new TextView(this);
+        l1.setText("Zona de recorte (también puedes pellizcar la imagen)");
+        l1.setTextColor(Color.WHITE);
+        l1.setPadding(0, dp(8), 0, 0);
+        box.addView(l1, matchWrap());
+        final SeekBar sb1 = new SeekBar(this);
+        sb1.setMax(90);
+        sb1.setProgress(Math.round(cv.getFraction() * 100) - 10);
+        sb1.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar s, int p, boolean fromUser) {
+                if (fromUser) cv.setFraction((p + 10) / 100f);
+            }
+            @Override public void onStartTrackingTouch(SeekBar s) { }
+            @Override public void onStopTrackingTouch(SeekBar s) { }
+        });
+        cv.setListener(() -> {
+            sb1.setProgress(Math.round(cv.getFraction() * 100) - 10);
+            refresh.run();
+        });
+        box.addView(sb1, matchWrap());
+
+        final TextView l2 = new TextView(this);
+        l2.setTextColor(Color.WHITE);
+        box.addView(l2, matchWrap());
+        final SeekBar sb2 = new SeekBar(this);
+        sb2.setMax(MAX_LOGO_PCT - MIN_LOGO_PCT);
+        sb2.setProgress(Math.round(DEFAULT_LOGO_FRACTION * 100) - MIN_LOGO_PCT);
+        l2.setText("Tamaño del logo en el QR: " + Math.round(DEFAULT_LOGO_FRACTION * 100) + "%");
+        sb2.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar s, int p, boolean fromUser) {
+                int pct = p + MIN_LOGO_PCT;
+                qrFrac[0] = pct / 100f;
+                l2.setText("Tamaño del logo en el QR: " + pct + "%");
+                refresh.run();
+            }
+            @Override public void onStartTrackingTouch(SeekBar s) { }
+            @Override public void onStopTrackingTouch(SeekBar s) { }
+        });
+        box.addView(sb2, matchWrap());
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(8), 0, 0);
+        row.addView(preview, new LinearLayout.LayoutParams(dp(110), dp(110)));
+        LinearLayout btns = new LinearLayout(this);
+        btns.setOrientation(LinearLayout.VERTICAL);
+        Button ok = bigButton("Listo", v -> result.done(cv.getCropped(), qrFrac[0]));
+        Button cancel = bigButton("Cancelar", v -> showGenerate());
+        btns.addView(ok);
+        btns.addView(space(8));
+        btns.addView(cancel);
+        LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        bl.leftMargin = dp(12);
+        row.addView(btns, bl);
+        box.addView(row, matchWrap());
+
+        setContentView(box);
+        refresh.run();
+    }
+
+    private void generate(final boolean dynamic, final String text, final Bitmap logo, final float logoFrac) {
         if (!dynamic) {
             try {
-                showResult(makeQr(text, logo, null), null);
+                showResult(makeQr(text, logo, logoFrac, null, 1000), null);
             } catch (Exception e) {
                 toast("No se pudo generar: " + e.getMessage());
             }
@@ -235,7 +330,7 @@ public class MainActivity extends Activity {
                 String id = res.getString("id");
                 String secret = res.getString("secret");
                 prefs.edit().putString("sec_" + id, secret).apply();
-                Bitmap bmp = makeQr(server + "/r/" + id, logo, id);
+                Bitmap bmp = makeQr(server + "/r/" + id, logo, logoFrac, id, 1000);
                 ui.post(() -> showResult(bmp, id));
             } catch (Exception e) {
                 ui.post(() -> toast("Error de conexión con el servidor: " + e.getMessage()));
@@ -243,8 +338,7 @@ public class MainActivity extends Activity {
         });
     }
 
-    private Bitmap makeQr(String content, Bitmap logo, String label) throws Exception {
-        final int size = 1000;
+    private Bitmap makeQr(String content, Bitmap logo, float logoFrac, String label, int size) throws Exception {
         Map<EncodeHintType, Object> hints = new EnumMap<>(EncodeHintType.class);
         hints.put(EncodeHintType.ERROR_CORRECTION, ErrorCorrectionLevel.H);
         hints.put(EncodeHintType.MARGIN, 2);
@@ -260,12 +354,13 @@ public class MainActivity extends Activity {
 
         if (logo != null) {
             Canvas c = new Canvas(qr);
-            int box = (int) (w * 0.24f);
-            int pad = (int) (box * 0.08f);
+            float frac = Math.max(MIN_LOGO_PCT / 100f, Math.min(MAX_LOGO_PCT / 100f, logoFrac));
+            int box = (int) (w * frac);
+            int pad = Math.max(1, (int) (box * 0.08f));
             float left = (w - box) / 2f, top = (h - box) / 2f;
             Paint white = new Paint(Paint.ANTI_ALIAS_FLAG);
             white.setColor(Color.WHITE);
-            c.drawRoundRect(new RectF(left, top, left + box, top + box), 24, 24, white);
+            c.drawRoundRect(new RectF(left, top, left + box, top + box), box * 0.1f, box * 0.1f, white);
             int s = Math.min(logo.getWidth(), logo.getHeight());
             Bitmap sq = Bitmap.createBitmap(logo, (logo.getWidth() - s) / 2, (logo.getHeight() - s) / 2, s, s);
             Bitmap scaled = Bitmap.createScaledBitmap(sq, box - 2 * pad, box - 2 * pad, true);
@@ -273,16 +368,17 @@ public class MainActivity extends Activity {
         }
 
         if (label == null) return qr;
-        Bitmap out = Bitmap.createBitmap(w, h + 110, Bitmap.Config.ARGB_8888);
+        int extra = Math.round(size * 0.11f);
+        Bitmap out = Bitmap.createBitmap(w, h + extra, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(out);
         c.drawColor(Color.WHITE);
         c.drawBitmap(qr, 0, 0, null);
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         p.setColor(Color.BLACK);
-        p.setTextSize(64);
+        p.setTextSize(size * 0.064f);
         p.setTypeface(Typeface.DEFAULT_BOLD);
         p.setTextAlign(Paint.Align.CENTER);
-        c.drawText("N° " + label, w / 2f, h + 80, p);
+        c.drawText("N° " + label, w / 2f, h + extra * 0.72f, p);
         return out;
     }
 
@@ -338,9 +434,10 @@ public class MainActivity extends Activity {
             return;
         }
         final String id = m.group(2);
-        final String secret = prefs.getString("sec_" + id, null);
-        if (secret == null) {
-            toast("Este QR no fue creado en este teléfono, no se puede editar");
+        String own = prefs.getString("sec_" + id, null);
+        final String secret = own != null ? own : prefs.getString("master", "");
+        if (secret.isEmpty()) {
+            toast("Este QR no fue creado en este teléfono. Para editarlo, mantén pulsado el título \"QR-save\" y escribe tu clave maestra.");
             return;
         }
         io.execute(() -> {
@@ -424,18 +521,40 @@ public class MainActivity extends Activity {
     }
 
     private void askServer(final Runnable next) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(20), dp(12), dp(20), 0);
+
+        TextView t1 = new TextView(this);
+        t1.setText("Dirección de tu servidor QR-save");
+        box.addView(t1, matchWrap());
         final EditText et = new EditText(this);
         et.setHint("https://qr-save.tuusuario.workers.dev");
         et.setText(server());
         et.setInputType(InputType.TYPE_TEXT_VARIATION_URI);
+        box.addView(et, matchWrap());
+
+        TextView t2 = new TextView(this);
+        t2.setText("Clave maestra (opcional: permite editar cualquier QR de tu servidor)");
+        t2.setPadding(0, dp(12), 0, 0);
+        box.addView(t2, matchWrap());
+        final EditText em = new EditText(this);
+        em.setHint("La misma que pusiste como ADMIN_KEY en Cloudflare");
+        em.setText(prefs.getString("master", ""));
+        em.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        box.addView(em, matchWrap());
+
         new AlertDialog.Builder(this)
-                .setTitle("Dirección de tu servidor QR-save")
-                .setView(et)
+                .setTitle("Configuración")
+                .setView(box)
                 .setPositiveButton("Guardar", (d, w) -> {
                     String s = et.getText().toString().trim();
                     while (s.endsWith("/")) s = s.substring(0, s.length() - 1);
                     if (!s.startsWith("https://")) { toast("Debe empezar con https://"); return; }
-                    prefs.edit().putString("server", s).apply();
+                    prefs.edit()
+                            .putString("server", s)
+                            .putString("master", em.getText().toString().trim())
+                            .apply();
                     if (next != null) next.run();
                 })
                 .setNegativeButton("Cancelar", null)
@@ -484,7 +603,22 @@ public class MainActivity extends Activity {
             while (o.outWidth / sample > max * 2 || o.outHeight / sample > max * 2) sample *= 2;
             BitmapFactory.Options o2 = new BitmapFactory.Options();
             o2.inSampleSize = sample;
-            try (InputStream in = getContentResolver().openInputStream(uri)) { return BitmapFactory.decodeStream(in, null, o2); }
+            Bitmap bmp;
+            try (InputStream in = getContentResolver().openInputStream(uri)) { bmp = BitmapFactory.decodeStream(in, null, o2); }
+            if (bmp == null) return null;
+            int rot = 0;
+            try (InputStream in = getContentResolver().openInputStream(uri)) {
+                int ori = new ExifInterface(in).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
+                if (ori == ExifInterface.ORIENTATION_ROTATE_90) rot = 90;
+                else if (ori == ExifInterface.ORIENTATION_ROTATE_180) rot = 180;
+                else if (ori == ExifInterface.ORIENTATION_ROTATE_270) rot = 270;
+            } catch (Exception ignored) { }
+            if (rot != 0) {
+                Matrix mx = new Matrix();
+                mx.postRotate(rot);
+                bmp = Bitmap.createBitmap(bmp, 0, 0, bmp.getWidth(), bmp.getHeight(), mx, true);
+            }
+            return bmp;
         } catch (Exception e) {
             return null;
         }
